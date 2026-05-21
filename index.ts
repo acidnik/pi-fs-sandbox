@@ -11,6 +11,11 @@
  *  /fs-sandbox-enable  — start sandboxing bash commands
  *  /fs-sandbox-disable — stop sandboxing bash commands
  *
+ * When a blocked access is detected, the user is prompted with choices:
+ *  - "Allow once" — temporary for this session
+ *  - "Allow and save" — persist to config
+ *  - "Block" — deny access
+ *
  * How it works:
  *  - Overrides the built-in `bash` tool to run inside bwrap
  *    with --ro-bind / / (default read-only), plus --bind for
@@ -22,15 +27,62 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   type BashOperations,
   createBashToolDefinition,
   isToolCallEventType,
 } from "@earendil-works/pi-coding-agent";
 import { buildBwrapArgs, buildBwrapCommand } from "./src/bwrap.ts";
-import { loadConfig, saveConfig, ensureDefaultConfig } from "./src/config.ts";
-import { isAllowWrite, isDenyRead } from "./src/paths.ts";
+import { loadConfig, saveConfig, ensureDefaultConfig, resolveHome } from "./src/config.ts";
+import { isAllowWrite, isDenyRead, matchesAnyPrefix } from "./src/paths.ts";
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+type AllowanceKind = "read" | "write";
+
+/**
+ * Compute the "effective" allowWrite list: config paths + session additions.
+ * denyRead is more nuanced: if a user allowed a path for read, we remove it
+ * from denyRead if it was denied by exact/directory match.
+ */
+function effectiveAllowWrite(configAllowWrite: string[], sessionWrite: string[]): string[] {
+  return [...new Set([...configAllowWrite, ...sessionWrite])];
+}
+
+function effectiveDenyRead(
+  configDenyRead: string[],
+  sessionAllowedRead: string[],
+  home: string,
+): string[] {
+  // A denyRead entry is removed from the effective list if the user has
+  // allowed a path that falls under it.
+  return configDenyRead.filter((d) => {
+    const resolved = resolveHome(d, home);
+    return !matchesAnyPrefix(resolved, sessionAllowedRead, home);
+  });
+}
+
+/**
+ * Extract a blocked write path from bwrap stderr output.
+ * Common patterns:
+ *   "touch: cannot touch '/path/file': Read-only file system"
+ *   "mkdir: cannot create directory '/path': Read-only file system"
+ *   "/path/file: Read-only file system"
+ */
+function extractBlockedWritePath(stderr: string): string | null {
+  const patterns = [
+    /cannot touch '([^']+)'/,
+    /cannot create directory '([^']+)'/,
+    /cannot create regular file '([^']+)'/,
+    /cannot open '([^']+)'/,
+  ];
+  for (const re of patterns) {
+    const m = stderr.match(re);
+    if (m) return m[1];
+  }
+  return null;
+}
 
 export default function (pi: ExtensionAPI) {
   const home = homedir();
@@ -41,6 +93,10 @@ export default function (pi: ExtensionAPI) {
 
   let sandboxEnabled = false;
   let sandboxInitialized = false;
+
+  // Session-level allowances (paths user allowed via prompt).
+  const sessionAllowWrite: string[] = [];
+  const sessionAllowRead: string[] = [];
 
   // ── bwrap availability check ───────────────────────────────────────────────
 
@@ -56,7 +112,62 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  // ── permission prompt ─────────────────────────────────────────────────────
+
+  /**
+   * Show a select prompt with 3 options:
+   *   1. Allow once (add to session allowance)
+   *   2. Allow and save (add to config and session)
+   *   3. Block
+   *
+   * Returns true if the user chose to allow.
+   */
+  async function promptAllow(
+    ctx: ExtensionContext,
+    kind: AllowanceKind,
+    path: string,
+  ): Promise<boolean> {
+    const config = loadConfig(home);
+    const choice = await ctx.ui.select(
+      kind === "read"
+        ? `📖 Read blocked: "${path}" is hidden (denyRead)`
+        : `📝 Write blocked: "${path}" is not in allowWrite`,
+      ["🔓 Allow once (session)", "💾 Allow and save to config", "🚫 Block"],
+    );
+
+    if (!choice || choice === "🚫 Block") return false;
+
+    if (kind === "read") {
+      sessionAllowRead.push(path);
+      if (choice === "💾 Allow and save to config") {
+        if (!config.denyRead.some((d) => resolveHome(d, home) === path)) {
+          config.denyRead = config.denyRead.filter(
+            (d) => resolveHome(d, home) !== path,
+          );
+        }
+        saveConfig(config, home);
+      }
+    } else {
+      sessionAllowWrite.push(path);
+      if (choice === "💾 Allow and save to config") {
+        if (!config.allowWrite.some((d) => resolveHome(d, home) === path)) {
+          config.allowWrite.push(path);
+        }
+        saveConfig(config, home);
+      }
+    }
+
+    return true;
+  }
+
   // ── sandboxed bash operations ──────────────────────────────────────────────
+
+  function getEffectiveBwrapArgs() {
+    const config = loadConfig(home);
+    const effAllowWrite = effectiveAllowWrite(config.allowWrite, sessionAllowWrite);
+    const effDenyRead = effectiveDenyRead(config.denyRead, sessionAllowRead, home);
+    return { config, effAllowWrite, effDenyRead };
+  }
 
   function createBwrapBashOps(
     allowWrite: string[],
@@ -122,50 +233,43 @@ export default function (pi: ExtensionAPI) {
 
   // ── status helpers ─────────────────────────────────────────────────────────
 
-  function updateStatus(ctx: any): void {
+  function updateStatus(ctx: ExtensionContext): void {
     if (!sandboxEnabled) {
       ctx.ui.setStatus("fs-sandbox", "🔒 FS: disabled");
       return;
     }
-    const config = loadConfig(home);
-    const { writablePaths, hiddenPaths } = buildBwrapArgs(
-      config.allowWrite,
-      config.denyRead,
-      home,
-    );
-    const writeSummary = writablePaths.length > 0
-      ? writablePaths.map((p) => p.split("/").pop()).join(", ")
-      : "none";
-    const hideCount = hiddenPaths.length;
+    const { effAllowWrite } = getEffectiveBwrapArgs();
     ctx.ui.setStatus(
       "fs-sandbox",
-      ctx.ui.theme.fg("accent", `🔒 FS: ${writablePaths.length} write paths`),
+      ctx.ui.theme.fg("accent", `🔒 FS: ${effAllowWrite.length} write paths`),
     );
   }
 
-  function formatConfig(ctx: any): void {
+  function formatConfig(ctx: ExtensionContext): void {
     const config = loadConfig(home);
-    const { writablePaths, hiddenPaths } = buildBwrapArgs(
-      config.allowWrite,
-      config.denyRead,
-      home,
-    );
+    const { effAllowWrite, effDenyRead } = getEffectiveBwrapArgs();
     const lines: string[] = [
       `FS-Sandbox: ${sandboxEnabled ? "🟢 enabled" : "🔴 disabled"}`,
       "──────────────",
-      `Allow Write (${writablePaths.length}):`,
-      ...(writablePaths.length > 0
-        ? writablePaths.map((p) => `  • ${p}`)
+      `Allow Write (${effAllowWrite.length}):`,
+      ...(effAllowWrite.length > 0
+        ? effAllowWrite.map((p) => `  • ${p}`)
         : ["  (none)"]),
       "",
-      `Hidden (denyRead) (${hiddenPaths.length}):`,
-      ...(hiddenPaths.length > 0
-        ? hiddenPaths.map((p) => `  • ${p}`)
+      `Hidden (denyRead) (${effDenyRead.length}):`,
+      ...(effDenyRead.length > 0
+        ? effDenyRead.map((p) => `  • ${p}`)
         : ["  (none)"]),
+      sessionAllowWrite.length > 0
+        ? [``, `Session write allowances:`, ...sessionAllowWrite.map((p) => `  • ${p}`)]
+        : [],
+      sessionAllowRead.length > 0
+        ? [``, `Session read allowances:`, ...sessionAllowRead.map((p) => `  • ${p}`)]
+        : [],
       "",
       "Network: unrestricted",
     ];
-    ctx.ui.notify(lines.join("\n"), "info");
+    ctx.ui.notify(lines.flat().join("\n"), "info");
   }
 
   // ── session lifecycle ─────────────────────────────────────────────────────
@@ -177,7 +281,6 @@ export default function (pi: ExtensionAPI) {
     }
     ensureDefaultConfig(home);
 
-    // Auto-enable if config says so
     const config = loadConfig(home);
     if (config.enabled) {
       sandboxEnabled = true;
@@ -192,6 +295,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     sandboxEnabled = false;
     sandboxInitialized = false;
+    sessionAllowWrite.length = 0;
+    sessionAllowRead.length = 0;
   });
 
   // ── bash tool override ─────────────────────────────────────────────────────
@@ -203,11 +308,39 @@ export default function (pi: ExtensionAPI) {
       if (!sandboxEnabled || !sandboxInitialized) {
         return localBash.execute(id, params, signal, onUpdate, ctx);
       }
-      const config = loadConfig(home);
-      const sandboxedBash = createBashToolDefinition(localCwd, {
-        operations: createBwrapBashOps(config.allowWrite, config.denyRead),
-      });
-      return sandboxedBash.execute(id, params, signal, onUpdate, ctx);
+
+      // Wrapper with retry logic: if bwrap blocks a write, we detect it,
+      // prompt the user, and retry with updated effective config.
+      const runBash = (): ReturnType<typeof localBash.execute> => {
+        const { effAllowWrite, effDenyRead } = getEffectiveBwrapArgs();
+        const sandboxedBash = createBashToolDefinition(localCwd, {
+          operations: createBwrapBashOps(effAllowWrite, effDenyRead),
+        });
+        return sandboxedBash.execute(id, params, signal, onUpdate, ctx);
+      };
+
+      let result = await runBash();
+
+      // Post-execution check: detect blocked write in stderr
+      if (ctx?.hasUI && result.content?.length) {
+        const outputText = result.content
+          .filter((c: any) => c.type === "text")
+          .map((c: any) => c.text)
+          .join("\n");
+        const blockedPath = extractBlockedWritePath(outputText);
+        if (blockedPath) {
+          const allowed = await promptAllow(ctx, "write", blockedPath);
+          if (allowed) {
+            onUpdate?.({
+              content: [{ type: "text", text: `\n--- Write access granted for "${blockedPath}", retrying ---\n` }],
+              details: {},
+            });
+            result = await runBash();
+          }
+        }
+      }
+
+      return result;
     },
   });
 
@@ -215,8 +348,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("user_bash", () => {
     if (!sandboxEnabled || !sandboxInitialized) return;
-    const config = loadConfig(home);
-    return { operations: createBwrapBashOps(config.allowWrite, config.denyRead) };
+    const { effAllowWrite, effDenyRead } = getEffectiveBwrapArgs();
+    return { operations: createBwrapBashOps(effAllowWrite, effDenyRead) };
   });
 
   // ── tool_call interception (read/write/edit) ──────────────────────────────
@@ -225,44 +358,39 @@ export default function (pi: ExtensionAPI) {
     if (!sandboxEnabled) return;
     const config = loadConfig(home);
 
-    // read — ask user if path is in denyRead
+    // read — block if path is in effective denyRead
     if (isToolCallEventType<"read", { path: string }>("read", event)) {
       const path = event.input.path;
-      if (isDenyRead(path, config.denyRead, home)) {
-        const allow = await ctx.ui.confirm(
-          "FS sandbox",
-          `Read "${path}"? This path is in denyRead.`,
-        );
-        if (!allow) {
-          return {
-            block: true,
-            reason: `FS sandbox: read denied for "${path}" — blocked by user`,
-          };
+      const effDeny = effectiveDenyRead(config.denyRead, sessionAllowRead, home);
+      if (isDenyRead(path, effDeny, home)) {
+        // Prompt user for permission
+        if (ctx?.hasUI) {
+          const allowed = await promptAllow(ctx, "read", path);
+          if (allowed) return undefined; // Allow — let the tool proceed
         }
-        // User allowed — let it through
-        return undefined;
+        return {
+          block: true,
+          reason: `FS sandbox: read denied for "${path}" (in denyRead)`,
+        };
       }
     }
 
-    // write / edit — ask user if path is NOT in allowWrite
+    // write / edit — block if path is NOT in effective allowWrite
     if (
       isToolCallEventType<"write", { path: string }>("write", event) ||
       isToolCallEventType<"edit", { path: string; oldText: string; newText: string }>("edit", event)
     ) {
       const path = event.input.path;
-      if (!isAllowWrite(path, config.allowWrite, home)) {
-        const allow = await ctx.ui.confirm(
-          "FS sandbox",
-          `Write to "${path}"? This path is not in allowWrite.`,
-        );
-        if (!allow) {
-          return {
-            block: true,
-            reason: `FS sandbox: write denied for "${path}" — blocked by user`,
-          };
+      const effAllow = effectiveAllowWrite(config.allowWrite, sessionAllowWrite);
+      if (!isAllowWrite(path, effAllow, home)) {
+        if (ctx?.hasUI) {
+          const allowed = await promptAllow(ctx, "write", path);
+          if (allowed) return undefined; // Allow — let the tool proceed
         }
-        // User allowed — let it through
-        return undefined;
+        return {
+          block: true,
+          reason: `FS sandbox: write denied for "${path}" (not in allowWrite)`,
+        };
       }
     }
 
@@ -288,7 +416,6 @@ export default function (pi: ExtensionAPI) {
       sandboxEnabled = true;
       sandboxInitialized = true;
 
-      // Persist enabled state
       const config = loadConfig(home);
       config.enabled = true;
       saveConfig(config, home);
