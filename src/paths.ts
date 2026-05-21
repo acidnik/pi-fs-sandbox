@@ -1,31 +1,50 @@
 /**
  * Path matching utilities for sandbox policy checks.
  *
- * We support exact prefix matching: a path is "covered" by a config entry
- * if the path starts with the resolved config path (as a directory prefix).
+ * Supports:
+ *  - Exact match: `/home/user/file` matches `/home/user/file`
+ *  - Directory prefix: `~/.ssh` matches `/home/nik/.ssh/id_rsa`
+ *  - Trailing glob: `~/.ssh/*` matches `/home/nik/.ssh/id_rsa` (same as dir prefix)
+ *  - Name glob: `~/.ssh/id_rsa*` matches `/home/nik/.ssh/id_rsa` and `/home/nik/.ssh/id_rsa.pub`
  */
 
 import { resolveHome } from "./config.ts";
 
-/** Check whether `path` starts with any prefix in `patterns` (resolved). */
+function normalize(p: string): string {
+  return p.replace(/\/+$/, "");
+}
+
+/** Check whether `path` matches a single pattern (resolved). */
+function matchesSingle(target: string, pattern: string): boolean {
+  const normTarget = normalize(target);
+  const normPattern = normalize(pattern);
+
+  // Exact match
+  if (normTarget === normPattern) return true;
+
+  // Trailing glob `*` — match prefix
+  if (normPattern.endsWith("*")) {
+    const prefix = normalize(normPattern.slice(0, -1));
+    if (normTarget.startsWith(prefix)) return true;
+  }
+
+  // Directory prefix: pattern /a/b matches /a/b/c but not /a/bc
+  const withSep = normPattern.endsWith("/") ? normPattern : normPattern + "/";
+  if (normTarget.startsWith(withSep)) return true;
+
+  return false;
+}
+
+/** Check whether `path` matches any pattern in `patterns` (resolved). */
 export function matchesAnyPrefix(
   target: string,
   patterns: string[],
   home: string,
 ): boolean {
   const resolved = patterns.map((p) => resolveHome(p, home));
-
-  // Normalise: strip trailing slash so `/home/user` matches `/home/user/foo`
-  const normTarget = target.replace(/\/+$/, "");
-
   for (const rp of resolved) {
-    const normPattern = rp.replace(/\/+$/, "");
-    if (normTarget === normPattern) return true;
-    // Check directory prefix: pattern /a/b matches /a/b/c but not /a/bc
-    const withSep = normPattern.endsWith("/") ? normPattern : normPattern + "/";
-    if (normTarget.startsWith(withSep)) return true;
+    if (matchesSingle(target, rp)) return true;
   }
-
   return false;
 }
 

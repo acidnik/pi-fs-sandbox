@@ -120,6 +120,10 @@ export default function (pi: ExtensionAPI) {
    *   2. Allow and save (add to config and session)
    *   3. Block
    *
+   * After choosing Allow, an input dialog appears with the path pre-filled
+   * so the user can edit it (e.g. replace exact file path with a directory
+   * or glob pattern like `~/.ssh/*`).
+   *
    * Returns true if the user chose to allow.
    */
   async function promptAllow(
@@ -137,21 +141,26 @@ export default function (pi: ExtensionAPI) {
 
     if (!choice || choice === "🚫 Block") return false;
 
+    // Let the user edit the path (e.g. change to a directory or add glob)
+    const hint = kind === "read"
+      ? `Edit path to allow (directory or glob, e.g. ${path.replace(/\/[^/]+$/, "/*")})`
+      : `Edit path to make writable (directory or glob, e.g. ${path.replace(/\/[^/]+$/, "")})`;
+    const edited = await ctx.ui.input(hint, path);
+    const finalPath = (edited ?? path).trim();
+
     if (kind === "read") {
-      sessionAllowRead.push(path);
+      sessionAllowRead.push(finalPath);
       if (choice === "💾 Allow and save to config") {
-        if (!config.denyRead.some((d) => resolveHome(d, home) === path)) {
-          config.denyRead = config.denyRead.filter(
-            (d) => resolveHome(d, home) !== path,
-          );
-        }
+        config.denyRead = config.denyRead.filter(
+          (d) => resolveHome(d, home) !== finalPath,
+        );
         saveConfig(config, home);
       }
     } else {
-      sessionAllowWrite.push(path);
+      sessionAllowWrite.push(finalPath);
       if (choice === "💾 Allow and save to config") {
-        if (!config.allowWrite.some((d) => resolveHome(d, home) === path)) {
-          config.allowWrite.push(path);
+        if (!config.allowWrite.includes(finalPath)) {
+          config.allowWrite.push(finalPath);
         }
         saveConfig(config, home);
       }
