@@ -65,3 +65,12 @@ export function isAllowWrite(
 ): boolean {
   return matchesAnyPrefix(target, allowWrite, home);
 }
+
+/** Check if target is inside denyWrite */
+export function isDenyWrite(
+  target: string,
+  denyWrite: string[],
+  home: string,
+): boolean {
+  return matchesAnyPrefix(target, denyWrite, home);
+}

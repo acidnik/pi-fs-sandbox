@@ -20,6 +20,7 @@ export interface FsSandboxConfig {
   enabled?: boolean;
   allowWrite?: string[];
   denyRead?: string[];
+  denyWrite?: string[];
 }
 
 const DEFAULT_CONFIG: Required<FsSandboxConfig> = {
@@ -32,6 +33,7 @@ const DEFAULT_CONFIG: Required<FsSandboxConfig> = {
     "~/.config/git",
     "~/.config/gh",
   ],
+  denyWrite: [],
 };
 
 function getConfigPath(home: string = homedir()): string {
@@ -53,6 +55,7 @@ export function loadConfig(home: string = homedir()): Required<FsSandboxConfig> 
       enabled: raw.enabled ?? DEFAULT_CONFIG.enabled,
       allowWrite: raw.allowWrite ?? DEFAULT_CONFIG.allowWrite,
       denyRead: raw.denyRead ?? DEFAULT_CONFIG.denyRead,
+      denyWrite: raw.denyWrite ?? DEFAULT_CONFIG.denyWrite,
     };
   } catch {
     return { ...DEFAULT_CONFIG };

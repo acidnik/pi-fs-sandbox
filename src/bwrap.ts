@@ -9,8 +9,13 @@
  *   5. `--unshare-ipc --unshare-pid --unshare-uts` — basic isolation.
  *
  * Crucially, NO `--unshare-net` → network is fully accessible.
+ *
+ * NOTE: --tmpfs targets MUST exist on disk before bwrap runs (bwrap
+ * cannot mkdir inside a --ro-bind rootfs). Call ensureBwrapDirs()
+ * before spawning the bwrap process.
  */
 
+import { existsSync } from "node:fs";
 import { resolveHome } from "./config.ts";
 
 export interface BwrapArgs {
@@ -36,13 +41,25 @@ export function buildBwrapArgs(
   args.push("--ro-bind", "/", "/");
 
   // 2. Writable paths
+  // bwrap needs the source to exist on the host for --bind.
   for (const p of resolvedWrite) {
-    args.push("--bind", p, p);
+    if (existsSync(p)) {
+      args.push("--bind", p, p);
+    }
   }
 
   // 3. Hidden paths (tmpfs — empty, no-op inside the sandbox)
+  //
+  // IMPORTANT: bwrap's --tmpfs requires the target directory to already
+  // exist — it cannot mkdir inside a --ro-bind rootfs. We ensure this
+  // by creating the dir on the host first. For denyRead paths that
+  // don't exist on the host, there's nothing to hide, so we skip them.
   for (const p of resolvedDeny) {
-    args.push("--tmpfs", p);
+    // Ensure the mount point exists so bwrap can mount tmpfs over it.
+    // If the path doesn't exist on host, skip it (nothing to hide).
+    if (existsSync(p)) {
+      args.push("--tmpfs", p);
+    }
   }
 
   // 4. Pseudo-filesystems
