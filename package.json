@@ -1,0 +1,38 @@
+{
+  "name": "@acidnik/pi-fs-sandbox",
+  "version": "0.1.0",
+  "description": "Filesystem-only sandbox for pi via bwrap (no network isolation)",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acidnik/pi-fs-sandbox.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "sandbox",
+    "bwrap",
+    "security"
+  ],
+  "files": [
+    "index.ts",
+    "src/**/*.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "@types/node": "^24",
+    "typescript": "^5.6.0"
+  }
+}
