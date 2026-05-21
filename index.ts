@@ -473,12 +473,16 @@ export default function (pi: ExtensionAPI) {
 
       let result = await runBash();
 
-      // Post-execution: detect blocked write in stderr
-      if (ctx?.hasUI && result.content?.length) {
+      // Post-execution: detect blocked write in stderr.
+      // Note: ctx.hasUI may be false in non-interactive modes, but
+      // ctx.ui.select() still works in RPC mode for Telegram bridge.
+      // We try the prompt regardless; if select() returns undefined
+      // (dialog not supported), we just keep the blocked result.
+      try {
         const outputText = result.content
-          .filter((c: any) => c.type === "text")
+          ?.filter((c: any) => c.type === "text")
           .map((c: any) => c.text)
-          .join("\n");
+          .join("") ?? "";
         const blockedPath = extractBlockedWritePath(outputText);
         if (blockedPath) {
           const allowed = await promptAllow(ctx, "write", blockedPath);
@@ -493,6 +497,8 @@ export default function (pi: ExtensionAPI) {
             result = await runBash();
           }
         }
+      } catch {
+        // Dialog failed silently — keep the original blocked result
       }
 
       return result;
@@ -519,10 +525,8 @@ export default function (pi: ExtensionAPI) {
       const effDeny = effectiveDenyRead(config.denyRead, sessionAllowRead, sessionRejectRead, home);
 
       if (isDenyRead(path, effDeny, home)) {
-        if (ctx?.hasUI) {
-          const allowed = await promptAllow(ctx, "read", path);
-          if (allowed) return undefined;
-        }
+        const allowed = await promptAllow(ctx, "read", path);
+        if (allowed) return undefined;
         return {
           block: true,
           reason: `FS sandbox: read denied for "${path}"`,
@@ -549,10 +553,8 @@ export default function (pi: ExtensionAPI) {
 
       // Then check allowWrite
       if (!isAllowWrite(path, effAllow, home)) {
-        if (ctx?.hasUI) {
-          const allowed = await promptAllow(ctx, "write", path);
-          if (allowed) return undefined;
-        }
+        const allowed = await promptAllow(ctx, "write", path);
+        if (allowed) return undefined;
         return {
           block: true,
           reason: `FS sandbox: write denied for "${path}" (not in allowWrite)`,
