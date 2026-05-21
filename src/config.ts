@@ -40,17 +40,32 @@ function getConfigPath(home: string = homedir()): string {
   return join(home, ".pi", "agent", "fs-sandbox.json");
 }
 
+/**
+ * Attempt to parse JSON with trailing commas fixed.
+ * JSON5-style trailing commas are a common source of parse failures
+ * when users manually edit the config.
+ */
+function parseJsonRobust(raw: string): any {
+  // First try normal parse
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // Remove trailing commas before ] and } (in arrays and objects)
+    const cleaned = raw.replace(/,\s*(\]|\})/g, "$1");
+    return JSON.parse(cleaned);
+  }
+}
+
 export function loadConfig(home: string = homedir()): Required<FsSandboxConfig> {
   const path = getConfigPath(home);
 
   if (!existsSync(path)) {
-    // First run — write defaults and return them.
     ensureDefaultConfig(home);
     return { ...DEFAULT_CONFIG };
   }
 
   try {
-    const raw = JSON.parse(readFileSync(path, "utf-8")) as FsSandboxConfig;
+    const raw = parseJsonRobust(readFileSync(path, "utf-8")) as FsSandboxConfig;
     return {
       enabled: raw.enabled ?? DEFAULT_CONFIG.enabled,
       allowWrite: raw.allowWrite ?? DEFAULT_CONFIG.allowWrite,
