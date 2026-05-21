@@ -225,28 +225,44 @@ export default function (pi: ExtensionAPI) {
     if (!sandboxEnabled) return;
     const config = loadConfig(home);
 
-    // read — block if path is in denyRead
+    // read — ask user if path is in denyRead
     if (isToolCallEventType<"read", { path: string }>("read", event)) {
       const path = event.input.path;
       if (isDenyRead(path, config.denyRead, home)) {
-        return {
-          block: true,
-          reason: `FS sandbox: read denied for "${path}" (in denyRead)`,
-        };
+        const allow = await ctx.ui.confirm(
+          "FS sandbox",
+          `Read "${path}"? This path is in denyRead.`,
+        );
+        if (!allow) {
+          return {
+            block: true,
+            reason: `FS sandbox: read denied for "${path}" — blocked by user`,
+          };
+        }
+        // User allowed — let it through
+        return undefined;
       }
     }
 
-    // write / edit — block if path is NOT in allowWrite
+    // write / edit — ask user if path is NOT in allowWrite
     if (
       isToolCallEventType<"write", { path: string }>("write", event) ||
       isToolCallEventType<"edit", { path: string; oldText: string; newText: string }>("edit", event)
     ) {
       const path = event.input.path;
       if (!isAllowWrite(path, config.allowWrite, home)) {
-        return {
-          block: true,
-          reason: `FS sandbox: write denied for "${path}" (not in allowWrite)`,
-        };
+        const allow = await ctx.ui.confirm(
+          "FS sandbox",
+          `Write to "${path}"? This path is not in allowWrite.`,
+        );
+        if (!allow) {
+          return {
+            block: true,
+            reason: `FS sandbox: write denied for "${path}" — blocked by user`,
+          };
+        }
+        // User allowed — let it through
+        return undefined;
       }
     }
 
