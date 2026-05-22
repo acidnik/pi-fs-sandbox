@@ -14,6 +14,11 @@ function normalize(p: string): string {
   return p.replace(/\/+$/, "");
 }
 
+/** Escape regex special chars in a string. */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Check whether `path` matches a single pattern (resolved). */
 function matchesSingle(target: string, pattern: string): boolean {
   const normTarget = normalize(target);
@@ -22,10 +27,17 @@ function matchesSingle(target: string, pattern: string): boolean {
   // Exact match
   if (normTarget === normPattern) return true;
 
-  // Trailing glob `*` — match prefix
-  if (normPattern.endsWith("*")) {
-    const prefix = normalize(normPattern.slice(0, -1));
-    if (normTarget.startsWith(prefix)) return true;
+  // If pattern contains `*`, convert to regex (fast path)
+  if (normPattern.includes("*")) {
+    const reStr = "^" + normPattern.split("/").map((part) => {
+      if (part === "*") return "[^/]+";
+      return escapeRegex(part).replace(/\\\*/g, "[^/]*");
+    }).join("/") + "$";
+    try {
+      return new RegExp(reStr).test(normTarget);
+    } catch {
+      return false;
+    }
   }
 
   // Directory prefix: pattern /a/b matches /a/b/c but not /a/bc
