@@ -77,12 +77,28 @@ function effectiveDenyRead(
   let result = [...new Set([...configDenyRead, ...sessionReject])];
 
   // Remove a deny pattern if the user session-allowed a path under it.
-  // config.allowRead is handled separately in the tool_call handler
-  // (bwrap always hides denyRead paths; allowRead is a tool-level override)
   result = result.filter((denyPattern) => {
     return !sessionAllow.some((allowedPath) => matchesAnyPrefix(allowedPath, [denyPattern], home));
   });
 
+  return result;
+}
+
+/** Same as effectiveDenyRead but also considers config.allowRead —
+ *  if allowRead has a path under a denyRead pattern, that pattern is
+ *  removed so bwrap doesn't tmpfs the directory (bash can see allowed files). */
+function effectiveDenyReadForBwrap(
+  configDenyRead: string[],
+  configAllowRead: string[],
+  sessionAllow: string[],
+  sessionReject: string[],
+  home: string,
+): string[] {
+  let result = [...new Set([...configDenyRead, ...sessionReject])];
+  const allAllow = [...configAllowRead, ...sessionAllow];
+  result = result.filter((denyPattern) => {
+    return !allAllow.some((allowedPath) => matchesAnyPrefix(allowedPath, [denyPattern], home));
+  });
   return result;
 }
 
@@ -352,8 +368,8 @@ export default function (pi: ExtensionAPI) {
     const effAllowWrite = effectiveAllowWrite(
       config.allowWrite, sessionAllowWrite, sessionRejectWrite, home,
     );
-    const effDenyRead = effectiveDenyRead(
-      config.denyRead, sessionAllowRead, sessionRejectRead, home,
+    const effDenyRead = effectiveDenyReadForBwrap(
+      config.denyRead, config.allowRead ?? [], sessionAllowRead, sessionRejectRead, home,
     );
     return { config, effAllowWrite, effDenyRead };
   }
