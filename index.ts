@@ -583,6 +583,20 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const config = loadConfig(home);
 
+      // Hard block: the sandbox config file itself.
+      const configPath = resolveHome("~/.pi/agent/fs-sandbox.json", home);
+      const reqPath = resolveHome(params.path, home);
+      if (reqPath.startsWith(configPath)) {
+        return {
+          content: [{
+            type: "text",
+            text: `❌ Cannot request access to "${params.path}" — this is the sandbox config file. Only extension dialogs or /fs-sandbox commands can modify it.`,
+          }],
+          details: { granted: false, path: params.path, access: params.access },
+          isError: true,
+        };
+      }
+
       // For write requests, also check denyWrite
       if (params.access === "write") {
         const effDenyWritePaths = effectiveDenyWrite(config.denyWrite ?? [], sessionRejectWrite);
@@ -651,10 +665,23 @@ export default function (pi: ExtensionAPI) {
       isToolCallEventType<"edit", { path: string; oldText: string; newText: string }>("edit", event)
     ) {
       const path = event.input.path;
+
+      // Hard block: the sandbox config file itself.
+      // Agent must NOT be able to modify it, otherwise it could disable
+      // the sandbox or add allowWrite paths. Config changes only through
+      // the extension's dialogs and commands.
+      const configPath = resolveHome("~/.pi/agent/fs-sandbox.json", home);
+      if (path === configPath || path.startsWith(configPath)) {
+        return {
+          block: true,
+          reason: `FS sandbox: cannot modify sandbox config file "${configPath}". Use the extension dialogs or /fs-sandbox commands instead.`,
+        };
+      }
+
       const effAllow = effectiveAllowWrite(config.allowWrite, sessionAllowWrite, sessionRejectWrite, home);
       const effDenyWritePaths = effectiveDenyWrite(config.denyWrite ?? [], sessionRejectWrite);
 
-      // First check denyWrite (hard block)
+      // Check denyWrite (hard block)
       if (isDenyWrite(path, effDenyWritePaths, home)) {
         return {
           block: true,
@@ -662,7 +689,7 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      // Then check allowWrite
+      // Check allowWrite
       if (!isAllowWrite(path, effAllow, home)) {
         const allowed = await promptAllow(ctx, "write", path);
         if (allowed) return undefined;
