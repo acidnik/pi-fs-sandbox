@@ -94,6 +94,13 @@ function effectiveDenyWrite(
 }
 
 /** Extract a blocked write path from bwrap stderr output. */
+/** Return a note about reject-all mode if active */
+function rejectAllNote(): string {
+  return rejectAll
+    ? "Sandbox is in reject-all mode. Continue with what you can, but do NOT attempt to bypass the sandbox."
+    : "";
+}
+
 function extractBlockedWritePath(stderr: string): string | null {
   const patterns = [
     /cannot touch '([^']+)'/,
@@ -137,6 +144,12 @@ export default function (pi: ExtensionAPI) {
   let sandboxEnabled = false;
   let sandboxInitialized = false;
   let rejectAll = false;
+
+  function rejectAllNote(): string {
+    return rejectAll
+      ? " 🔇 Sandbox is in reject-all mode. Continue with what you can, but do NOT attempt to bypass the sandbox."
+      : "";
+  }
 
   // Session-level allowances / rejections
   const sessionAllowWrite: string[] = [];
@@ -551,8 +564,9 @@ export default function (pi: ExtensionAPI) {
             ? `Use sandbox_request(access: "write", path: "${sandboxPath}")`
             : `File is hidden. Use sandbox_request(access: "read", path: "${sandboxPath}")`,
           `Once granted, retry ONLY the command that failed.`,
+          rejectAllNote(),
           "",
-        ].join("\n");
+        ].filter(Boolean).join("\n");
 
         // Send via onUpdate AND include in final result (onUpdate alone
         // is streamed intermediate — final result replaces it)
@@ -627,7 +641,7 @@ export default function (pi: ExtensionAPI) {
         };
       }
       return {
-        content: [{ type: "text", text: `❌ User denied ${params.access} access to: ${params.path}` }],
+        content: [{ type: "text", text: [`❌ User denied ${params.access} access to: ${params.path}`, rejectAllNote()].filter(Boolean).join("\n") }],
         details: { granted: false, path: params.path, access: params.access },
         isError: true,
       };
@@ -658,7 +672,7 @@ export default function (pi: ExtensionAPI) {
         if (allowed) return undefined;
         return {
           block: true,
-          reason: `FS sandbox: read denied for "${path}"`,
+          reason: `FS sandbox: read denied for "${path}"${rejectAllNote()}`,
         };
       }
     }
