@@ -15,7 +15,7 @@
  * Crucially, NO `--unshare-net` → network is fully accessible.
  */
 
-import { existsSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveHome } from "./config.ts";
@@ -109,16 +109,23 @@ export function buildBwrapArgs(
   }
 
   // Third pass: for dirs with allowRead overrides, hide files that
-  // match denyRead file patterns but NOT allowRead
+  // are NOT matched by any allowRead pattern, by binding the empty
+  // placeholder over them.
   for (const dp of resolvedDeny) {
     if (!dirsWithAllowOverride.has(dp)) continue;
-    // dp is a directory with allowRead overrides.
-    // Resolve individual file patterns under this directory.
-    // For now: skip specific file-level handling — the tool_call
-    // handler will check allowRead for read tool, and bash can
-    // see the files (which is the trade-off for allowRead access).
-    // Users who need file-level granularity should use tool-level
-    // denyRead patterns (add specific files to denyRead).
+    // Enumerate files in the directory (non-recursive)
+    try {
+      const entries = readdirSync(dp);
+      for (const entry of entries) {
+        const fullPath = join(dp, entry);
+        // Skip directories
+        try { if (statSync(fullPath).isDirectory()) continue; } catch { continue; }
+        // If this file doesn't match any allowRead pattern, hide it
+        if (!matchesAnyPrefix(fullPath, resolvedAllow, home)) {
+          args.push("--bind", EMPTY_FILE, fullPath);
+        }
+      }
+    } catch { /* skip if dir can't be read */ }
   }
 
   // 4. Fix known problematic files inside the sandbox.
