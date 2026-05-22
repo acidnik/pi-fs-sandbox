@@ -80,14 +80,21 @@ export function buildBwrapArgs(
     }
   }
 
-  // 4. Pseudo-filesystems
+  // 4. Fix known problematic files inside the sandbox.
+  // /etc/ssh/ssh_config.d/ files owned by nobody break SSH's strict
+  // ownership check. Override them with /dev/null.
+  const sshConfigDir = "/etc/ssh/ssh_config.d";
+  args.push("--tmpfs", sshConfigDir);
+
+  // 5. SSH: ensure host key check works without known_hosts
+  // (the user's ~/.ssh/ may be hidden by denyRead)
+  args.push("--setenv", "GIT_SSH_COMMAND", "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null");
+
+  // 6. Pseudo-filesystems
   args.push("--dev", "/dev");
   args.push("--proc", "/proc");
 
-  // 5. PTY for interactive programs (git, ssh, etc.)
-  args.push("--pty");
-
-  // 6. Basic isolation (not network!)
+  // 5. Basic isolation (not network!)
   args.push("--unshare-ipc");
   args.push("--unshare-pid");
   args.push("--unshare-uts");
