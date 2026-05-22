@@ -69,6 +69,7 @@ function effectiveAllowWrite(
 
 function effectiveDenyRead(
   configDenyRead: string[],
+  configAllowRead: string[],
   sessionAllow: string[],
   sessionReject: string[],
   home: string,
@@ -76,11 +77,11 @@ function effectiveDenyRead(
   // Start with config + session rejects
   let result = [...new Set([...configDenyRead, ...sessionReject])];
 
-  // Remove a deny pattern if the user allowed a path that falls under it.
-  // E.g. denyRead has `~/.ssh`, user allowed `/home/nik/.ssh/id_rsa` →
-  // remove `~/.ssh` from effective denyRead so bwrap doesn't --tmpfs it.
+  // Remove a deny pattern if the user allowed a path that falls under it
+  // (from either config.allowRead or session allowances).
+  const allAllow = [...configAllowRead, ...sessionAllow];
   result = result.filter((denyPattern) => {
-    return !sessionAllow.some((allowedPath) => matchesAnyPrefix(allowedPath, [denyPattern], home));
+    return !allAllow.some((allowedPath) => matchesAnyPrefix(allowedPath, [denyPattern], home));
   });
 
   return result;
@@ -221,15 +222,16 @@ export default function (pi: ExtensionAPI) {
       const finalPath = path;
       if (kind === "read") {
         sessionAllowRead.push(finalPath);
-        config.denyRead = config.denyRead.filter(
-          (d) => resolveHome(d, home) !== finalPath,
-        );
+        // Add to allowRead instead of removing from denyRead — this way
+        // patterns like ~/.ssh/*.pub correctly override ~/.ssh in denyRead
+        if (!(config.allowRead ?? []).includes(finalPath)) {
+          config.allowRead = [...(config.allowRead ?? []), finalPath];
+        }
       } else {
         sessionAllowWrite.push(finalPath);
         if (!config.allowWrite.includes(finalPath)) {
           config.allowWrite.push(finalPath);
         }
-        // Remove from denyWrite if it was there
         config.denyWrite = (config.denyWrite ?? []).filter(
           (d) => resolveHome(d, home) !== finalPath,
         );
@@ -247,10 +249,9 @@ export default function (pi: ExtensionAPI) {
       const finalPath = (edited ?? path).trim();
       if (kind === "read") {
         sessionAllowRead.push(finalPath);
-        // Remove edited path from denyRead if present
-        config.denyRead = config.denyRead.filter(
-          (d) => resolveHome(d, home) !== finalPath,
-        );
+        if (!(config.allowRead ?? []).includes(finalPath)) {
+          config.allowRead = [...(config.allowRead ?? []), finalPath];
+        }
       } else {
         sessionAllowWrite.push(finalPath);
         if (!config.allowWrite.includes(finalPath)) {
@@ -348,7 +349,7 @@ export default function (pi: ExtensionAPI) {
       config.allowWrite, sessionAllowWrite, sessionRejectWrite, home,
     );
     const effDenyRead = effectiveDenyRead(
-      config.denyRead, sessionAllowRead, sessionRejectRead, home,
+      config.denyRead, config.allowRead ?? [], sessionAllowRead, sessionRejectRead, home,
     );
     return { config, effAllowWrite, effDenyRead };
   }
@@ -455,6 +456,9 @@ export default function (pi: ExtensionAPI) {
       ...(sessionAllowWrite.length > 0
         ? [``, `Session write allowances:`, ...sessionAllowWrite.map((p) => `  • ${p}`)]
         : []),
+      (config.allowRead ?? []).length > 0
+        ? [``, `Allow Read (config):`, ...(config.allowRead ?? []).map((p) => `  • ${p}`)]
+        : [],
       ...(sessionAllowRead.length > 0
         ? [``, `Session read allowances:`, ...sessionAllowRead.map((p) => `  • ${p}`)]
         : []),
@@ -673,7 +677,7 @@ export default function (pi: ExtensionAPI) {
     // ── read ────────────────────────────────────────────────────────────────
     if (isToolCallEventType<"read", { path: string }>("read", event)) {
       const path = event.input.path;
-      const effDeny = effectiveDenyRead(config.denyRead, sessionAllowRead, sessionRejectRead, home);
+      const effDeny = effectiveDenyRead(config.denyRead, config.allowRead ?? [], sessionAllowRead, sessionRejectRead, home);
 
       if (isDenyRead(path, effDeny, home)) {
         const allowed = await promptAllow(ctx, "read", path);

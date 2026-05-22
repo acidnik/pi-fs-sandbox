@@ -22,11 +22,13 @@ export interface FsSandboxConfig {
   allowWrite?: string[];
   denyRead?: string[];
   denyWrite?: string[];
+  allowRead?: string[];
 }
 
 const DEFAULT_CONFIG: Required<FsSandboxConfig> = {
   enabled: false,
   allowWrite: ["/tmp", "."],
+  allowRead: [],
   denyRead: [
     "~/.ssh",
     "~/.aws",
@@ -70,6 +72,7 @@ export function loadConfig(home: string = homedir()): Required<FsSandboxConfig> 
     return {
       enabled: raw.enabled ?? DEFAULT_CONFIG.enabled,
       allowWrite: raw.allowWrite ?? DEFAULT_CONFIG.allowWrite,
+      allowRead: raw.allowRead ?? DEFAULT_CONFIG.allowRead,
       denyRead: raw.denyRead ?? DEFAULT_CONFIG.denyRead,
       denyWrite: raw.denyWrite ?? DEFAULT_CONFIG.denyWrite,
     };
