@@ -780,13 +780,26 @@ export default function (pi: ExtensionAPI) {
     description: "Toggle reject-all mode — all dialogs auto-rejected, useful for unattended runs",
     handler: async (_args, ctx) => {
       rejectAll = !rejectAll;
-      // Persist to session so it survives /reload
       pi.appendEntry("fs-sandbox-state", { rejectAll });
       updateStatus(ctx);
       if (rejectAll) {
         ctx.ui.notify("🔇 Reject-all ON — all sandbox dialogs will be auto-rejected", "warning");
       } else {
         ctx.ui.notify("🔊 Reject-all OFF — sandbox dialogs will appear again", "info");
+      }
+    },
+  });
+
+  pi.registerShortcut("ctrl+r", {
+    description: "Toggle fs-sandbox reject-all mode",
+    handler: async (ctx) => {
+      rejectAll = !rejectAll;
+      pi.appendEntry("fs-sandbox-state", { rejectAll });
+      updateStatus(ctx);
+      if (rejectAll) {
+        ctx.ui.notify("🔇 Reject-all ON (Ctrl+R)", "warning");
+      } else {
+        ctx.ui.notify("🔊 Reject-all OFF (Ctrl+R)", "info");
       }
     },
   });
