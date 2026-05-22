@@ -15,8 +15,14 @@
  * Crucially, NO `--unshare-net` → network is fully accessible.
  */
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolveHome } from "./config.ts";
+
+/** Empty placeholder file for file-level denyRead (hides file content). */
+const EMPTY_FILE = join(tmpdir(), ".fs-sandbox-empty");
+try { writeFileSync(EMPTY_FILE, "", "utf-8"); } catch {}
 import { matchesAnyPrefix } from "./paths.ts";
 
 export interface BwrapArgs {
@@ -96,8 +102,8 @@ export function buildBwrapArgs(
         // No allowRead overrides — hide entire directory
         args.push("--tmpfs", dp);
       } else {
-        // File-level denyRead — replace with /dev/null
-        args.push("--bind", "/dev/null", dp);
+        // File-level denyRead — replace with empty placeholder
+        args.push("--bind", EMPTY_FILE, dp);
       }
     } catch { /* skip */ }
   }
