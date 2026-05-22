@@ -136,6 +136,7 @@ export default function (pi: ExtensionAPI) {
 
   let sandboxEnabled = false;
   let sandboxInitialized = false;
+  let rejectAll = false;
 
   // Session-level allowances / rejections
   const sessionAllowWrite: string[] = [];
@@ -175,6 +176,7 @@ export default function (pi: ExtensionAPI) {
     kind: AllowanceKind,
     path: string,
   ): Promise<boolean> {
+    if (rejectAll) return false;
     const config = loadConfig(home);
 
     const readTitle = `📖 Read blocked: "${path}"`;
@@ -408,9 +410,10 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     const { effAllowWrite } = getEffectiveConfig();
+    const mode = rejectAll ? " 🔇 reject-all" : "";
     ctx.ui.setStatus(
       "fs-sandbox",
-      ctx.ui.theme.fg("accent", `🔒 FS: ${effAllowWrite.length} write paths`),
+      ctx.ui.theme.fg("accent", `🔒 FS: ${effAllowWrite.length} write paths${mode}`),
     );
   }
 
@@ -448,6 +451,7 @@ export default function (pi: ExtensionAPI) {
       ...(sessionRejectRead.length > 0
         ? [``, `Session read rejects:`, ...sessionRejectRead.map((p) => `  • ${p}`)]
         : []),
+      rejectAll ? [``, `🔇 Reject-all mode: ON`] : [],
       "",
       "Network: unrestricted",
     ];
@@ -747,6 +751,19 @@ export default function (pi: ExtensionAPI) {
 
       ctx.ui.setStatus("fs-sandbox", "🔒 FS: disabled");
       ctx.ui.notify("🔓 FS sandbox disabled", "info");
+    },
+  });
+
+  pi.registerCommand("fs-sandbox-reject", {
+    description: "Toggle reject-all mode — all dialogs auto-rejected, useful for unattended runs",
+    handler: async (_args, ctx) => {
+      rejectAll = !rejectAll;
+      updateStatus(ctx);
+      if (rejectAll) {
+        ctx.ui.notify("🔇 Reject-all ON — all sandbox dialogs will be auto-rejected", "warning");
+      } else {
+        ctx.ui.notify("🔊 Reject-all OFF — sandbox dialogs will appear again", "info");
+      }
     },
   });
 }
