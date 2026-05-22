@@ -89,6 +89,10 @@ function extractBlockedWritePath(stderr: string): string | null {
     /cannot create directory '([^']+)'/,
     /cannot create regular file '([^']+)'/,
     /cannot open '([^']+)'/,
+    /cannot create file '([^']+)'/,
+    // Generic EROFS pattern (sometimes path is before the colon)
+    /'([^']+)': Read-only file system/,
+    /([^\s:]+): Read-only file system/,
   ];
   for (const re of patterns) {
     const m = stderr.match(re);
@@ -473,28 +477,35 @@ export default function (pi: ExtensionAPI) {
 
       let result = await runBash();
 
-      // Post-execution: detect blocked write in stderr.
-      // Note: ctx.hasUI may be false in non-interactive modes, but
-      // ctx.ui.select() still works in RPC mode for Telegram bridge.
-      // We try the prompt regardless; if select() returns undefined
-      // (dialog not supported), we just keep the blocked result.
+      // Post-execution: detect sandbox-blocked operation in stderr.
+      // If found, prompt user. If allowed, DON'T retry automatically —
+      // instead tell the LLM to reconstruct the command. This avoids
+      // re-executing the already-successful parts (e.g. when user runs
+      // `aaa && bbb` and only bbb was blocked).
       try {
         const outputText = result.content
           ?.filter((c: any) => c.type === "text")
           .map((c: any) => c.text)
           .join("") ?? "";
+
         const blockedPath = extractBlockedWritePath(outputText);
         if (blockedPath) {
           const allowed = await promptAllow(ctx, "write", blockedPath);
           if (allowed) {
-            onUpdate?.({
-              content: [{
-                type: "text",
-                text: `\n--- Write access granted for "${blockedPath}", retrying ---\n`,
-              }],
-              details: {},
-            });
-            result = await runBash();
+            const msg = [
+              "",
+              `⚠️ The command above was partially blocked by fs-sandbox.`,
+              `User granted access to: ${blockedPath}`,
+              `The failed operation was NOT retried automatically.`,
+              `Please retry with the corrected path now that access has been granted.`,
+              "",
+            ].join("\n");
+            // Append the message to the existing result content
+            const textContent = result.content?.filter((c: any) => c.type === "text") ?? [];
+            if (textContent.length > 0) {
+              textContent[0] = { type: "text", text: textContent[0].text + msg };
+              result = { ...result, content: textContent };
+            }
           }
         }
       } catch {
