@@ -15,8 +15,7 @@
  * before spawning the bwrap process.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync } from "node:fs";
 import { resolveHome } from "./config.ts";
 
 export interface BwrapArgs {
@@ -43,26 +42,9 @@ export function buildBwrapArgs(
 
   // 2. Writable paths
   // bwrap needs the source to exist on the host for --bind.
-  // For non-existent paths, create a placeholder so bwrap can bind it.
   for (const p of resolvedWrite) {
     if (existsSync(p)) {
       args.push("--bind", p, p);
-    } else {
-      // Path doesn't exist yet (e.g. user allowed a new file).
-      // Create a placeholder so bwrap can bind-mount it.
-      try {
-        const parent = dirname(p);
-        mkdirSync(parent, { recursive: true });
-        // Try directory first, fall back to empty file
-        if (p.endsWith("/") || !p.includes(".")) {
-          mkdirSync(p, { recursive: true });
-        } else {
-          writeFileSync(p, "", "utf-8");
-        }
-        args.push("--bind", p, p);
-      } catch {
-        // Can't create placeholder — skip this path
-      }
     }
   }
 

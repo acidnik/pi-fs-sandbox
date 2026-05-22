@@ -29,6 +29,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -41,6 +42,14 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { buildBwrapArgs, buildBwrapCommand } from "./src/bwrap.ts";
 import { loadConfig, saveConfig, ensureDefaultConfig, resolveHome } from "./src/config.ts";
 import { isAllowWrite, isDenyRead, isDenyWrite, matchesAnyPrefix } from "./src/paths.ts";
+
+const DEBUG_LOG = "/tmp/fs-sandbox-debug.log";
+function debugLog(...args: unknown[]) {
+  try {
+    const line = `[${new Date().toISOString()}] ${args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(" ")}\n`;
+    appendFileSync(DEBUG_LOG, line);
+  } catch {}
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -103,21 +112,15 @@ function extractBlockedWritePath(stderr: string): string | null {
   return null;
 }
 
-/** Check if a bash command references paths that match denyRead patterns. */
-function findDenyReadMatch(
-  command: string,
+/** Find which denyRead pattern appears in a text string. */
+function findDenyInText(
+  text: string,
   effDenyRead: string[],
   home: string,
 ): string | null {
-  // Extract things that look like filesystem paths from the command
-  const pathPattern = /["']?(\/[^\s"'|;&()]+|~\/[^\s"'|;&()]+)["']?/g;
-  const matches = command.matchAll(pathPattern);
-  for (const m of matches) {
-    const candidate = m[1].replace(/["']$/, "");
-    // Resolve ~ before checking against denyRead patterns
-    const resolved = resolveHome(candidate, home);
-    if (isDenyRead(resolved, effDenyRead, home)) {
-      // Return the resolved path for the hint message
+  for (const pattern of effDenyRead) {
+    const resolved = resolveHome(pattern, home);
+    if (text.includes(resolved) || text.includes(pattern)) {
       return resolved;
     }
   }
@@ -486,72 +489,71 @@ export default function (pi: ExtensionAPI) {
     ...localBash,
     label: "bash (fs-sandboxed)",
     async execute(id, params, signal, onUpdate, ctx) {
+      debugLog("execute called", { command: params?.command, sandboxEnabled, sandboxInitialized });
+
       if (!sandboxEnabled || !sandboxInitialized) {
+        debugLog("sandbox disabled, using local bash");
         return localBash.execute(id, params, signal, onUpdate, ctx);
       }
 
       const runBash = (): ReturnType<typeof localBash.execute> => {
         const { effAllowWrite, effDenyRead } = getEffectiveConfig();
+        debugLog("runBash", { effAllowWrite, effDenyRead });
         const sb = createBashToolDefinition(localCwd, {
           operations: createBwrapBashOps(effAllowWrite, effDenyRead),
         });
         return sb.execute(id, params, signal, onUpdate, ctx);
       };
 
-      let result = await runBash();
+      let result: any;
+      let errorOutput = "";
 
-      // Post-execution: detect sandbox-blocked operation in stderr.
-      // We DON'T show a dialog here (ctx.ui.select() may not work in
-      // the tool execute callback). Instead we append a hint to the
-      // output telling the LLM to retry via a separate tool call.
-      // The LLM can then use `read` or `write` tools, which DO trigger
-      // dialogs via the tool_call handler.
       try {
-        const outputText = result.content
-          ?.filter((c: any) => c.type === "text")
-          .map((c: any) => c.text)
-          .join("") ?? "";
+        result = await runBash();
+        debugLog("runBash completed OK", { hasResult: !!result, hasContent: !!result?.content });
+      } catch (e: any) {
+        // bash tool THROWS for non-zero exit codes instead of returning a result.
+        // The error message contains the command output.
+        errorOutput = e?.message ?? String(e);
+        debugLog("runBash THREW", { error: errorOutput.slice(0, 500), stack: e?.stack?.slice(0, 300) });
+        // Construct a synthetic result from the error
+        result = {
+          content: [{ type: "text" as const, text: errorOutput }],
+          details: { exitCode: 1 },
+          isError: true,
+        };
+      }
 
-        const { effDenyRead } = getEffectiveConfig();
+      const { effDenyRead } = getEffectiveConfig();
+      const outputText = result.content
+        ?.map((c: any) => (typeof c.text === "string" ? c.text : ""))
+        .filter(Boolean)
+        .join("\n") ?? "";
 
-        // Check for write blocks (EROFS in stderr)
-        const blockedPath = extractBlockedWritePath(outputText);
-        if (blockedPath) {
-          const msg = [
-            "",
-            `--- FS-SANDBOX: "${blockedPath}" blocked (not in allowWrite) ---`,
-            `Use sandbox_request(access: "write", path: "${blockedPath}") to ask the user for permission.`,
-            `Once granted, retry ONLY the command that failed, not the entire pipeline.`,
-            "",
-          ].join("\n");
-          const textContent = result.content?.filter((c: any) => c.type === "text") ?? [];
-          if (textContent.length > 0) {
-            textContent[0] = { type: "text", text: textContent[0].text + msg };
-            result = { ...result, content: textContent };
-          }
-        }
+      // Detect sandbox-blocked operation in output or error
+      const searchText = (params.command ?? "") + "\n" + outputText;
+      const blockedPath = extractBlockedWritePath(outputText);
+      const deniedReadPath = (!blockedPath)
+        ? findDenyInText(searchText, effDenyRead, home)
+        : null;
 
-        // Check for read blocks (path in command matches denyRead)
-        if (!blockedPath && effDenyRead.length > 0 && params.command) {
-          const deniedReadPath = findDenyReadMatch(params.command, effDenyRead, home);
-          if (deniedReadPath) {
-            const msg = [
-              "",
-              `--- FS-SANDBOX: "${deniedReadPath}" is hidden by denyRead ---`,
-              `The file may exist but is hidden by the sandbox.`,
-              `Use sandbox_request(access: "read", path: "${deniedReadPath}") to ask the user for permission.`,
-              `Once granted, retry the command.`,
-              "",
-            ].join("\n");
-            const textContent = result.content?.filter((c: any) => c.type === "text") ?? [];
-            if (textContent.length > 0) {
-              textContent[0] = { type: "text", text: textContent[0].text + msg };
-              result = { ...result, content: textContent };
-            }
-          }
-        }
-      } catch {
-        // Ignore parse errors
+      const sandboxPath = blockedPath || deniedReadPath;
+      if (sandboxPath) {
+        const access = blockedPath ? "write" : "read";
+        const msg = [
+          "",
+          `--- FS-SANDBOX: "${sandboxPath}" blocked (${access}) ---`,
+          access === "write"
+            ? `Use sandbox_request(access: "write", path: "${sandboxPath}")`
+            : `File is hidden. Use sandbox_request(access: "read", path: "${sandboxPath}")`,
+          `Once granted, retry ONLY the command that failed.`,
+          "",
+        ].join("\n");
+
+        // Send via onUpdate AND include in final result (onUpdate alone
+        // is streamed intermediate — final result replaces it)
+        try { onUpdate?.({ content: [{ type: "text", text: msg }], details: {} }); } catch {}
+        result = { ...result, content: [...(result.content ?? []), { type: "text" as const, text: msg }] };
       }
 
       return result;
