@@ -103,6 +103,24 @@ function extractBlockedWritePath(stderr: string): string | null {
   return null;
 }
 
+/** Check if a bash command references paths that match denyRead patterns. */
+function findDenyReadMatch(
+  command: string,
+  effDenyRead: string[],
+  home: string,
+): string | null {
+  // Extract things that look like filesystem paths from the command
+  const pathPattern = /["']?(\/[^\s"'|;&()]+|~\/[^\s"'|;&()]+)["']?/g;
+  const matches = command.matchAll(pathPattern);
+  for (const m of matches) {
+    const candidate = m[1].replace(/["']$/, "");
+    if (isDenyRead(candidate, effDenyRead, home)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 export default function (pi: ExtensionAPI) {
   const home = homedir();
   const localCwd = process.cwd();
@@ -491,6 +509,9 @@ export default function (pi: ExtensionAPI) {
           .map((c: any) => c.text)
           .join("") ?? "";
 
+        const { effDenyRead } = getEffectiveConfig();
+
+        // Check for write blocks (EROFS in stderr)
         const blockedPath = extractBlockedWritePath(outputText);
         if (blockedPath) {
           const msg = [
@@ -504,6 +525,26 @@ export default function (pi: ExtensionAPI) {
           if (textContent.length > 0) {
             textContent[0] = { type: "text", text: textContent[0].text + msg };
             result = { ...result, content: textContent };
+          }
+        }
+
+        // Check for read blocks (path in command matches denyRead)
+        if (!blockedPath && effDenyRead.length > 0 && params.command) {
+          const deniedReadPath = findDenyReadMatch(params.command, effDenyRead, home);
+          if (deniedReadPath) {
+            const msg = [
+              "",
+              `--- FS-SANDBOX: "${deniedReadPath}" is hidden by denyRead ---`,
+              `The file may exist but is hidden by the sandbox.`,
+              `Use sandbox_request(access: "read", path: "${deniedReadPath}") to ask the user for permission.`,
+              `Once granted, retry the command.`,
+              "",
+            ].join("\n");
+            const textContent = result.content?.filter((c: any) => c.type === "text") ?? [];
+            if (textContent.length > 0) {
+              textContent[0] = { type: "text", text: textContent[0].text + msg };
+              result = { ...result, content: textContent };
+            }
           }
         }
       } catch {
