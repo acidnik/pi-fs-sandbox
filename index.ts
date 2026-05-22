@@ -69,7 +69,6 @@ function effectiveAllowWrite(
 
 function effectiveDenyRead(
   configDenyRead: string[],
-  configAllowRead: string[],
   sessionAllow: string[],
   sessionReject: string[],
   home: string,
@@ -77,14 +76,19 @@ function effectiveDenyRead(
   // Start with config + session rejects
   let result = [...new Set([...configDenyRead, ...sessionReject])];
 
-  // Remove a deny pattern if the user allowed a path that falls under it
-  // (from either config.allowRead or session allowances).
-  const allAllow = [...configAllowRead, ...sessionAllow];
+  // Remove a deny pattern if the user session-allowed a path under it.
+  // config.allowRead is handled separately in the tool_call handler
+  // (bwrap always hides denyRead paths; allowRead is a tool-level override)
   result = result.filter((denyPattern) => {
-    return !allAllow.some((allowedPath) => matchesAnyPrefix(allowedPath, [denyPattern], home));
+    return !sessionAllow.some((allowedPath) => matchesAnyPrefix(allowedPath, [denyPattern], home));
   });
 
   return result;
+}
+
+/** Check if a path is allowed by allowRead (tool-level override for denyRead) */
+function isAllowedRead(path: string, allowRead: string[], home: string): boolean {
+  return matchesAnyPrefix(path, allowRead, home);
 }
 
 function effectiveDenyWrite(
@@ -349,7 +353,7 @@ export default function (pi: ExtensionAPI) {
       config.allowWrite, sessionAllowWrite, sessionRejectWrite, home,
     );
     const effDenyRead = effectiveDenyRead(
-      config.denyRead, config.allowRead ?? [], sessionAllowRead, sessionRejectRead, home,
+      config.denyRead, sessionAllowRead, sessionRejectRead, home,
     );
     return { config, effAllowWrite, effDenyRead };
   }
@@ -677,8 +681,10 @@ export default function (pi: ExtensionAPI) {
     // ── read ────────────────────────────────────────────────────────────────
     if (isToolCallEventType<"read", { path: string }>("read", event)) {
       const path = event.input.path;
-      const effDeny = effectiveDenyRead(config.denyRead, config.allowRead ?? [], sessionAllowRead, sessionRejectRead, home);
+      // Check allowRead override first (tool-level exception for denyRead)
+      if (isAllowedRead(path, config.allowRead ?? [], home)) return undefined;
 
+      const effDeny = effectiveDenyRead(config.denyRead, sessionAllowRead, sessionRejectRead, home);
       if (isDenyRead(path, effDeny, home)) {
         const allowed = await promptAllow(ctx, "read", path);
         if (allowed) return undefined;
