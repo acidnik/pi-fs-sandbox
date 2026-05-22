@@ -84,7 +84,10 @@ export function buildBwrapArgs(
   args.push("--dev", "/dev");
   args.push("--proc", "/proc");
 
-  // 5. Basic isolation (not network!)
+  // 5. PTY for interactive programs (git, ssh, etc.)
+  args.push("--pty");
+
+  // 6. Basic isolation (not network!)
   args.push("--unshare-ipc");
   args.push("--unshare-pid");
   args.push("--unshare-uts");
