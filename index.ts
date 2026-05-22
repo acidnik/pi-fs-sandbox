@@ -114,8 +114,11 @@ function findDenyReadMatch(
   const matches = command.matchAll(pathPattern);
   for (const m of matches) {
     const candidate = m[1].replace(/["']$/, "");
-    if (isDenyRead(candidate, effDenyRead, home)) {
-      return candidate;
+    // Resolve ~ before checking against denyRead patterns
+    const resolved = resolveHome(candidate, home);
+    if (isDenyRead(resolved, effDenyRead, home)) {
+      // Return the resolved path for the hint message
+      return resolved;
     }
   }
   return null;
