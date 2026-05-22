@@ -480,6 +480,14 @@ export default function (pi: ExtensionAPI) {
     }
     ensureDefaultConfig(home);
 
+    // Restore rejectAll flag from session persistence (use last entry)
+    for (const entry of ctx.sessionManager.getEntries()) {
+      if (entry.type === "custom" && (entry as any).customType === "fs-sandbox-state") {
+        const data = (entry as any).data;
+        rejectAll = data?.rejectAll ?? false;
+      }
+    }
+
     const config = loadConfig(home);
     if (config.enabled) {
       sandboxEnabled = true;
@@ -772,6 +780,8 @@ export default function (pi: ExtensionAPI) {
     description: "Toggle reject-all mode — all dialogs auto-rejected, useful for unattended runs",
     handler: async (_args, ctx) => {
       rejectAll = !rejectAll;
+      // Persist to session so it survives /reload
+      pi.appendEntry("fs-sandbox-state", { rejectAll });
       updateStatus(ctx);
       if (rejectAll) {
         ctx.ui.notify("🔇 Reject-all ON — all sandbox dialogs will be auto-rejected", "warning");
