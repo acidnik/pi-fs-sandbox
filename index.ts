@@ -36,6 +36,8 @@ import {
   createBashToolDefinition,
   isToolCallEventType,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { buildBwrapArgs, buildBwrapCommand } from "./src/bwrap.ts";
 import { loadConfig, saveConfig, ensureDefaultConfig, resolveHome } from "./src/config.ts";
 import { isAllowWrite, isDenyRead, isDenyWrite, matchesAnyPrefix } from "./src/paths.ts";
@@ -478,10 +480,11 @@ export default function (pi: ExtensionAPI) {
       let result = await runBash();
 
       // Post-execution: detect sandbox-blocked operation in stderr.
-      // If found, prompt user. If allowed, DON'T retry automatically —
-      // instead tell the LLM to reconstruct the command. This avoids
-      // re-executing the already-successful parts (e.g. when user runs
-      // `aaa && bbb` and only bbb was blocked).
+      // We DON'T show a dialog here (ctx.ui.select() may not work in
+      // the tool execute callback). Instead we append a hint to the
+      // output telling the LLM to retry via a separate tool call.
+      // The LLM can then use `read` or `write` tools, which DO trigger
+      // dialogs via the tool_call handler.
       try {
         const outputText = result.content
           ?.filter((c: any) => c.type === "text")
@@ -490,29 +493,80 @@ export default function (pi: ExtensionAPI) {
 
         const blockedPath = extractBlockedWritePath(outputText);
         if (blockedPath) {
-          const allowed = await promptAllow(ctx, "write", blockedPath);
-          if (allowed) {
-            const msg = [
-              "",
-              `⚠️ The command above was partially blocked by fs-sandbox.`,
-              `User granted access to: ${blockedPath}`,
-              `The failed operation was NOT retried automatically.`,
-              `Please retry with the corrected path now that access has been granted.`,
-              "",
-            ].join("\n");
-            // Append the message to the existing result content
-            const textContent = result.content?.filter((c: any) => c.type === "text") ?? [];
-            if (textContent.length > 0) {
-              textContent[0] = { type: "text", text: textContent[0].text + msg };
-              result = { ...result, content: textContent };
-            }
+          const msg = [
+            "",
+            `--- FS-SANDBOX: "${blockedPath}" blocked (not in allowWrite) ---`,
+            `Use sandbox_request(access: "write", path: "${blockedPath}") to ask the user for permission.`,
+            `Once granted, retry ONLY the command that failed, not the entire pipeline.`,
+            "",
+          ].join("\n");
+          const textContent = result.content?.filter((c: any) => c.type === "text") ?? [];
+          if (textContent.length > 0) {
+            textContent[0] = { type: "text", text: textContent[0].text + msg };
+            result = { ...result, content: textContent };
           }
         }
       } catch {
-        // Dialog failed silently — keep the original blocked result
+        // Ignore parse errors
       }
 
       return result;
+    },
+  });
+
+  // ── sandbox_request tool ──────────────────────────────────────────────────
+  //
+  // The LLM calls this when a bash command fails with a sandbox block.
+  // We show the permission dialog (if supported) or silently grant/deny.
+  // Once allowed, the effective config is updated and the LLM retries.
+
+  pi.registerTool({
+    name: "sandbox_request",
+    label: "Sandbox Request",
+    description: "Ask the user to grant filesystem access (read or write) to a specific path",
+    promptSnippet: "Request user permission for sandbox-restricted paths",
+    promptGuidelines: [
+      'Use sandbox_request when a bash command fails with "Read-only file system" or "FS-SANDBOX" in the output',
+      'Pass the exact path from the error and whether you need "read" or "write" access',
+      'If granted, retry the original command — the path will be accessible',
+    ],
+    parameters: Type.Object({
+      access: StringEnum(["read", "write"]),
+      path: Type.String({ description: "Path to request access for" }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const config = loadConfig(home);
+
+      // For write requests, also check denyWrite
+      if (params.access === "write") {
+        const effDenyWritePaths = effectiveDenyWrite(config.denyWrite ?? [], sessionRejectWrite);
+        if (isDenyWrite(params.path, effDenyWritePaths, home)) {
+          return {
+            content: [{ type: "text", text: `❌ Access denied: "${params.path}" is in denyWrite` }],
+            details: { granted: false, path: params.path, access: params.access },
+            isError: true,
+          };
+        }
+      }
+
+      const allowed = await promptAllow(ctx, params.access, params.path);
+      if (allowed) {
+        return {
+          content: [{
+            type: "text",
+            text: [
+              `✅ User granted ${params.access} access to: ${params.path}`,
+              `If the previously blocked operation was part of a multi-command pipeline. Retry ONLY the command that failed, not the entire pipeline.`,
+            ].join("\n"),
+          }],
+          details: { granted: true, path: params.path, access: params.access },
+        };
+      }
+      return {
+        content: [{ type: "text", text: `❌ User denied ${params.access} access to: ${params.path}` }],
+        details: { granted: false, path: params.path, access: params.access },
+        isError: true,
+      };
     },
   });
 
