@@ -1,7 +1,8 @@
 /**
  * Config for pi-fs-sandbox.
  *
- * Stored at ~/.pi/agent/fs-sandbox.json
+ * Stored at ~/.pi/fs-sandbox/config.json
+ * (separate dir from ~/.pi/agent/ so it's NOT in allowWrite by default)
  *
  * Fields:
  *   enabled     — whether fs-sandbox is active (default: false)
@@ -25,7 +26,7 @@ export interface FsSandboxConfig {
 
 const DEFAULT_CONFIG: Required<FsSandboxConfig> = {
   enabled: false,
-  allowWrite: [],
+  allowWrite: ["/tmp", "."],
   denyRead: [
     "~/.ssh",
     "~/.aws",
@@ -37,7 +38,7 @@ const DEFAULT_CONFIG: Required<FsSandboxConfig> = {
 };
 
 function getConfigPath(home: string = homedir()): string {
-  return join(home, ".pi", "agent", "fs-sandbox.json");
+  return join(home, ".pi", "fs-sandbox", "config.json");
 }
 
 /**

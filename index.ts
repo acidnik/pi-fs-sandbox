@@ -4,7 +4,7 @@
  * Unlike the full pi-sandbox, this extension:
  *  - Only restricts filesystem access (no network isolation)
  *  - Uses raw bwrap directly instead of @anthropic-ai/sandbox-runtime
- *  - Has a minimal config ~/.pi/agent/fs-sandbox.json
+ *  - Has a minimal config ~/.pi/fs-sandbox/config.json
  *
  * Commands:
  *  /fs-sandbox         — show current status and effective config
@@ -584,7 +584,7 @@ export default function (pi: ExtensionAPI) {
       const config = loadConfig(home);
 
       // Hard block: the sandbox config file itself.
-      const configPath = resolveHome("~/.pi/agent/fs-sandbox.json", home);
+      const configPath = resolveHome("~/.pi/fs-sandbox/config.json", home);
       const reqPath = resolveHome(params.path, home);
       if (reqPath.startsWith(configPath)) {
         return {
@@ -670,7 +670,7 @@ export default function (pi: ExtensionAPI) {
       // Agent must NOT be able to modify it, otherwise it could disable
       // the sandbox or add allowWrite paths. Config changes only through
       // the extension's dialogs and commands.
-      const configPath = resolveHome("~/.pi/agent/fs-sandbox.json", home);
+      const configPath = resolveHome("~/.pi/fs-sandbox/config.json", home);
       if (path === configPath || path.startsWith(configPath)) {
         return {
           block: true,
