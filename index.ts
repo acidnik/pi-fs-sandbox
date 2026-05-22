@@ -176,12 +176,12 @@ export default function (pi: ExtensionAPI) {
 
   // ── permission prompt ─────────────────────────────────────────────────────
 
-  const SELECT_ALLOW_SESSION = "🔓 Allow for session";
-  const SELECT_ALLOW_SAVE   = "💾 Allow and save";
-  const SELECT_EDIT_ALLOW   = "✏️ Edit path and save";
-  const SELECT_REJECT_SESSION = "🚫 Reject for session";
-  const SELECT_REJECT_SAVE  = "⛔ Reject and save";
-  const SELECT_EDIT_REJECT  = "✏️ Edit, reject and save";
+  const SELECT_ALLOW_SESSION     = "🔓 Allow for session";
+  const SELECT_DENY_SESSION      = "🚫 Deny for session";
+  const SELECT_ALLOW_SAVE        = "💾 Allow and save";
+  const SELECT_DENY_SAVE         = "⛔ Deny and save";
+  const SELECT_EDIT_ALLOW_SAVE   = "✏️ Edit, allow, save";
+  const SELECT_EDIT_DENY_SAVE    = "✏️ Edit, deny, save";
 
   /**
    * Show a 6-option dialog when sandbox blocks an operation.
@@ -202,11 +202,11 @@ export default function (pi: ExtensionAPI) {
       kind === "read" ? readTitle : writeTitle,
       [
         SELECT_ALLOW_SESSION,
+        SELECT_DENY_SESSION,
         SELECT_ALLOW_SAVE,
-        SELECT_EDIT_ALLOW,
-        SELECT_REJECT_SESSION,
-        SELECT_REJECT_SAVE,
-        SELECT_EDIT_REJECT,
+        SELECT_DENY_SAVE,
+        SELECT_EDIT_ALLOW_SAVE,
+        SELECT_EDIT_DENY_SAVE,
       ],
     );
 
@@ -217,6 +217,20 @@ export default function (pi: ExtensionAPI) {
       if (kind === "read") sessionAllowRead.push(path);
       else sessionAllowWrite.push(path);
       return true;
+    }
+
+    // ── Deny for session (immediate) ──────────────────────────────────────
+    if (choice === SELECT_DENY_SESSION) {
+      if (kind === "read") {
+        const idx = sessionAllowRead.indexOf(path);
+        if (idx !== -1) sessionAllowRead.splice(idx, 1);
+        sessionRejectRead.push(path);
+      } else {
+        const idx = sessionAllowWrite.indexOf(path);
+        if (idx !== -1) sessionAllowWrite.splice(idx, 1);
+        sessionRejectWrite.push(path);
+      }
+      return false;
     }
 
     // ── Allow and save (immediate) ─────────────────────────────────────────
@@ -242,8 +256,8 @@ export default function (pi: ExtensionAPI) {
       return true;
     }
 
-    // ── Edit path and save ─────────────────────────────────────────────────
-    if (choice === SELECT_EDIT_ALLOW) {
+    // ── Edit, allow, save ─────────────────────────────────────────────────
+    if (choice === SELECT_EDIT_ALLOW_SAVE) {
       const edited = await ctx.ui.input(
         `Edit path to allow (current: ${path})`,
         path,
@@ -267,24 +281,8 @@ export default function (pi: ExtensionAPI) {
       return true;
     }
 
-    // ── Reject for session (immediate) ─────────────────────────────────────
-    if (choice === SELECT_REJECT_SESSION) {
-      // Ensure path is NOT in session allowances
-      if (kind === "read") {
-        // Remove from allow if previously granted
-        const idx = sessionAllowRead.indexOf(path);
-        if (idx !== -1) sessionAllowRead.splice(idx, 1);
-        sessionRejectRead.push(path);
-      } else {
-        const idx = sessionAllowWrite.indexOf(path);
-        if (idx !== -1) sessionAllowWrite.splice(idx, 1);
-        sessionRejectWrite.push(path);
-      }
-      return false;
-    }
-
-    // ── Reject and save (immediate) ────────────────────────────────────────
-    if (choice === SELECT_REJECT_SAVE) {
+    // ── Deny and save (immediate) ──────────────────────────────────────────
+    if (choice === SELECT_DENY_SAVE) {
       const finalPath = path;
       if (kind === "read") {
         // Add to denyRead config
@@ -311,8 +309,8 @@ export default function (pi: ExtensionAPI) {
       return false;
     }
 
-    // ── Edit, reject and save ──────────────────────────────────────────────
-    if (choice === SELECT_EDIT_REJECT) {
+    // ── Edit, deny, save ──────────────────────────────────────────────────
+    if (choice === SELECT_EDIT_DENY_SAVE) {
       const edited = await ctx.ui.input(
         `Edit path to block (current: ${path})`,
         path,

@@ -2,7 +2,7 @@
 
 **Filesystem-only sandbox for pi via bwrap — no network isolation.**
 
-A [pi](https://pi.dev) extension that restricts filesystem access for bash commands using [bubblewrap](https://github.com/containers/bubblewrap) (bwrap), while keeping full network access. Features permission dialogs, reject-all mode, SSH/git support, and subagent compatibility.
+A [pi](https://pi.dev) extension that restricts filesystem access for bash commands using [bubblewrap](https://github.com/containers/bubblewrap) (bwrap), while keeping full network access. Features permission dialogs, granular allowRead overrides, reject-all mode, SSH/git support, and subagent compatibility.
 
 ## Why not pi-sandbox?
 
@@ -13,7 +13,8 @@ The full [pi-sandbox](https://github.com/oddsjam/pi-sandbox) uses `@anthropic-ai
 - ✅ Minimal config — single file `~/.pi/fs-sandbox/config.json`
 - ✅ Permission dialogs with 6 options
 - ✅ `sandbox_request` tool for explicit access requests
-- ✅ Reject-all mode for unattended runs (`Ctrl+R`)
+- ✅ **Granular denyRead/allowRead** — allow specific files in hidden dirs
+- ✅ Reject-all mode for unattended runs (`Alt+R`)
 - ✅ SSH/git push works out of the box
 - ✅ Subagent compatible (no UI dialogs in subagent context)
 
@@ -24,9 +25,11 @@ bash(touch /path)                    read/write/edit tool
        │                                    │
        ▼                                    ▼
    bwrap --ro-bind / /              tool_call interception
-       │                              denyRead / allowWrite
+   --bind /tmp ...                  denyRead / allowWrite
+   --tmpfs ~/.ssh  OR                     │
+   --bind empty id_ed25519               │
        │                                    │
-  EROFS / tmpfs                     blocked → dialog?
+  EROFS / empty file                blocked → dialog?
        │                                    │
   FS-SANDBOX hint ──→ sandbox_request ◄────┘
                         tool
@@ -43,16 +46,45 @@ Two-layer protection:
 bwrap \
   --ro-bind / / \          # everything read-only
   --bind /tmp /tmp         # writable paths (allowWrite)
-  --tmpfs ~/.ssh           # hidden paths (denyRead)
+  --tmpfs ~/.ssh           # OR: hide entire directory (no allowRead)
+  --bind /tmp/.empty ~/.ssh/id_ed25519  # OR: hide specific file
   --dev /dev               # pseudo-fs
   --proc /proc
   --unshare-ipc --unshare-pid --unshare-uts
   -- bash -c "your command"
 ```
 
+### denyRead + allowRead granularity
+
+Use `allowRead` to make specific files accessible inside a denyRead directory:
+
+```json
+{
+  "denyRead": ["~/.ssh"],
+  "allowRead": ["~/.ssh/*.pub"]
+}
+```
+
+bwrap behavior changes based on whether a denyRead directory has allowRead overrides:
+
+| Scenario | bash behavior | `read` tool behavior |
+|----------|--------------|---------------------|
+| `denyRead: ["~/.ssh"]` (no allowRead) | `--tmpfs` hides everything | blocked (denyRead) |
+| `denyRead: ["~/.ssh"]` + `allowRead: ["~/.ssh/*.pub"]` | Dir is visible; non-`.pub` files bound to empty placeholder | `.pub` allowed by allowRead, rest blocked |
+| `denyRead: ["~/.ssh/id_ed25519"]` (file-level) | File replaced with empty | blocked (denyRead) |
+
+When `allowRead` has patterns under a denyRead directory:
+1. The directory is **not** tmpfs'd (bash can list files)
+2. The extension **enumerates** the directory contents
+3. Files matching `allowRead` patterns stay visible
+4. Files NOT matching `allowRead` are bound to an **empty placeholder** (`/tmp/.fs-sandbox-empty`)
+5. The `read` tool checks `allowRead` separately — only matching paths are allowed
+
+This gives you **file-level granularity** even though bwrap operates at the mount level.
+
 ### When bash is blocked
 
-The command fails with `Read-only file system` or `No such file`. The extension detects this and appends a hint:
+The extension appends a hint:
 
 ```
 --- FS-SANDBOX: "/path" blocked (read) ---
@@ -70,12 +102,17 @@ When a path is blocked, the user sees:
 📝 Write blocked: "/home/nik/file.txt"
 
 [🔓 Allow for session]
+[🚫 Deny for session]
 [💾 Allow and save]
-[✏️ Edit path and save]
-[🚫 Reject for session]
-[⛔ Reject and save]
-[✏️ Edit, reject and save]
+[⛔ Deny and save]
+[✏️ Edit, allow, save]
+[✏️ Edit, deny, save]
 ```
+
+Options:
+- **Allow/Deny for session** — immediate, no config change
+- **Allow/Deny and save** — persists to config
+- **Edit, allow/deny, save** — edit the path (e.g. add glob `~/.ssh/*.pub`) then save
 
 After allowing, the path is added to session allowances. The LLM retries only the failed command.
 
@@ -88,7 +125,7 @@ For unattended runs: all dialogs are auto-rejected, no waiting. The LLM sees:
 but do NOT attempt to bypass the sandbox.
 ```
 
-Toggle with `/fs-sandbox-reject` or **`Ctrl+R`**. Persists across `/reload`.
+Toggle with `/fs-sandbox-reject` or **`Alt+R`**. Persists across `/reload`.
 
 ## Installation
 
@@ -110,6 +147,7 @@ Located at `~/.pi/fs-sandbox/config.json` (separate from `~/.pi/agent/`, NOT in 
 {
   "enabled": true,
   "allowWrite": ["/tmp", "."],
+  "allowRead": [],
   "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg", "~/.config/git", "~/.config/gh"],
   "denyWrite": []
 }
@@ -119,7 +157,8 @@ Located at `~/.pi/fs-sandbox/config.json` (separate from `~/.pi/agent/`, NOT in 
 |-------|-------------|
 | `enabled` | Auto-enable on session start |
 | `allowWrite` | Paths writable inside bwrap; everything else is read-only |
-| `denyRead` | Paths hidden inside bwrap via `--tmpfs` (shown as empty) |
+| `allowRead` | File patterns that override denyRead (tool-level + bwrap granular) |
+| `denyRead` | Paths hidden inside bwrap (directories → `--tmpfs`, files → empty bind) |
 | `denyWrite` | Paths explicitly denied write access (even if parent is in allowWrite) |
 
 The config file itself is **protected** — cannot be modified via `write`/`edit`/`sandbox_request`. Only through extension dialogs and `/fs-sandbox-*` commands.
@@ -131,7 +170,7 @@ The config file itself is **protected** — cannot be modified via `write`/`edit
 | `/fs-sandbox` | Show status and effective config (with session allowances) |
 | `/fs-sandbox-enable` | Enable sandboxing |
 | `/fs-sandbox-disable` | Disable sandboxing |
-| `/fs-sandbox-reject` | Toggle reject-all mode (`Ctrl+R`) |
+| `/fs-sandbox-reject` | Toggle reject-all mode (`Alt+R`) |
 
 ## SSH / Git
 
@@ -149,7 +188,7 @@ pi-fs-sandbox/
 ├── index.ts          # Extension entry point
 ├── src/
 │   ├── config.ts     # Config read/write, JSON with trailing comma fix
-│   ├── bwrap.ts      # bwrap argument builder (--bind, --tmpfs)
+│   ├── bwrap.ts      # bwrap argument builder (--bind, --tmpfs, enumeration)
 │   └── paths.ts      # Path matching with glob support
 ├── package.json
 └── README.md
