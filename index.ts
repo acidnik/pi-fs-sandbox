@@ -84,24 +84,6 @@ function effectiveDenyRead(
   return result;
 }
 
-/** Same as effectiveDenyRead but also considers config.allowRead —
- *  if allowRead has a path under a denyRead pattern, that pattern is
- *  removed so bwrap doesn't tmpfs the directory (bash can see allowed files). */
-function effectiveDenyReadForBwrap(
-  configDenyRead: string[],
-  configAllowRead: string[],
-  sessionAllow: string[],
-  sessionReject: string[],
-  home: string,
-): string[] {
-  let result = [...new Set([...configDenyRead, ...sessionReject])];
-  const allAllow = [...configAllowRead, ...sessionAllow];
-  result = result.filter((denyPattern) => {
-    return !allAllow.some((allowedPath) => matchesAnyPrefix(allowedPath, [denyPattern], home));
-  });
-  return result;
-}
-
 /** Check if a path is allowed by allowRead (tool-level override for denyRead) */
 function isAllowedRead(path: string, allowRead: string[], home: string): boolean {
   return matchesAnyPrefix(path, allowRead, home);
@@ -368,8 +350,8 @@ export default function (pi: ExtensionAPI) {
     const effAllowWrite = effectiveAllowWrite(
       config.allowWrite, sessionAllowWrite, sessionRejectWrite, home,
     );
-    const effDenyRead = effectiveDenyReadForBwrap(
-      config.denyRead, config.allowRead ?? [], sessionAllowRead, sessionRejectRead, home,
+    const effDenyRead = effectiveDenyRead(
+      config.denyRead, sessionAllowRead, sessionRejectRead, home,
     );
     return { config, effAllowWrite, effDenyRead };
   }
@@ -377,10 +359,11 @@ export default function (pi: ExtensionAPI) {
   function createBwrapBashOps(
     allowWrite: string[],
     denyRead: string[],
+    allowRead: string[],
   ): BashOperations {
     return {
       async exec(command, cwd, { onData, signal, timeout }) {
-        const fullCmd = buildBwrapCommand(command, allowWrite, denyRead, home);
+        const fullCmd = buildBwrapCommand(command, allowWrite, denyRead, allowRead, home);
 
         return new Promise((resolve, reject) => {
           const child = spawn(fullCmd[0], fullCmd.slice(1), {
@@ -546,10 +529,10 @@ export default function (pi: ExtensionAPI) {
       }
 
       const runBash = (): ReturnType<typeof localBash.execute> => {
-        const { effAllowWrite, effDenyRead } = getEffectiveConfig();
+        const { config, effAllowWrite, effDenyRead } = getEffectiveConfig();
         debugLog("runBash", { effAllowWrite, effDenyRead });
         const sb = createBashToolDefinition(localCwd, {
-          operations: createBwrapBashOps(effAllowWrite, effDenyRead),
+          operations: createBwrapBashOps(effAllowWrite, effDenyRead, config.allowRead ?? []),
         });
         return sb.execute(id, params, signal, onUpdate, ctx);
       };
@@ -685,7 +668,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("user_bash", () => {
     if (!sandboxEnabled || !sandboxInitialized) return;
     const { effAllowWrite, effDenyRead } = getEffectiveConfig();
-    return { operations: createBwrapBashOps(effAllowWrite, effDenyRead) };
+    const cfg = loadConfig(home);
+    return { operations: createBwrapBashOps(effAllowWrite, effDenyRead, cfg.allowRead ?? []) };
   });
 
   // ── tool_call interception (read/write/edit) ──────────────────────────────
