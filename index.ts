@@ -568,13 +568,9 @@ export default function (pi: ExtensionAPI) {
         : null;
 
       // Only show hint if command actually failed (exit code != 0).
-      // This prevents false positives when allowRead made the file
-      // readable but the post-exec detection still finds denyRead paths
-      // in the command text (e.g. cat ~/.ssh/id_ed25519.pub succeeds
-      // because of allowRead, but hint still fires for ~/.ssh).
-      const cmdFailed = result.details?.exitCode !== 0;
-      debugLog("post-exec check", { blockedPath, deniedReadPath, cmdFailed, exitCode: result.details?.exitCode });
-      const sandboxPath = (blockedPath || deniedReadPath) && cmdFailed ? (blockedPath || deniedReadPath) : null;
+      const exitCode = result.details?.exitCode;
+      debugLog("post-exec check", { blockedPath, deniedReadPath, exitCode });
+      const sandboxPath = (blockedPath || deniedReadPath) && exitCode !== 0 && exitCode !== undefined ? (blockedPath || deniedReadPath) : null;
       if (sandboxPath) {
         const access = blockedPath ? "write" : "read";
         const msg = [
