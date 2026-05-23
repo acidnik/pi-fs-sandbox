@@ -567,7 +567,13 @@ export default function (pi: ExtensionAPI) {
         ? findDenyInText(searchText, effDenyRead, home)
         : null;
 
-      const sandboxPath = blockedPath || deniedReadPath;
+      // Only show hint if command actually failed (exit code != 0).
+      // This prevents false positives when allowRead made the file
+      // readable but the post-exec detection still finds denyRead paths
+      // in the command text (e.g. cat ~/.ssh/id_ed25519.pub succeeds
+      // because of allowRead, but hint still fires for ~/.ssh).
+      const cmdFailed = result.details?.exitCode !== 0;
+      const sandboxPath = (blockedPath || deniedReadPath) && cmdFailed ? (blockedPath || deniedReadPath) : null;
       if (sandboxPath) {
         const access = blockedPath ? "write" : "read";
         const msg = [
