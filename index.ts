@@ -619,6 +619,7 @@ export default function (pi: ExtensionAPI) {
       path: Type.String({ description: "Path to request access for" }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      debugLog("sandbox_request CALLED", { access: params.access, path: params.path });
       const config = loadConfig(home);
 
       // Hard block: the sandbox config file itself.
